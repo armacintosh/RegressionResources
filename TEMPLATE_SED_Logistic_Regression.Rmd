@@ -1,0 +1,199 @@
+
+```{r}
+# loading packages
+library(tidyverse)
+library(car)
+library(sjPlot)
+library(visdat)
+library(pROC)
+library(table1)
+library(Hmisc)
+library(plotly)
+library(effectsize)
+```
+
+
+# **The Socioeconomic and Educational Disadvantaged Composite**
+
+The socioeconomically and educationally disadvantaged composite measure was determined using screening indicators for inclusion using logistic regression and based on their contribution in predicting applicants’ self-disclosed disadvantaged status. 
+Script template developed by Xuan Pan and Alexander MacIntosh at Acuity Insights, based on Henderson et al 2020: https://muse.jhu.edu/article/774201
+
+```{r}
+# read in the data
+data.clean <- read_csv("./data_clean.csv")
+
+# select variables included in SED composite score based on data available
+data <- data.clean %>%
+  select(aamc.id, 
+         pell.grant.indicator, 
+         group.family.income, 
+         group.parent.edu, 
+         fap, 
+         family.assistance.program, 
+         ses.disadvantage.indicator, 
+         contribution.to.family, 
+         school
+         )
+
+# convert variables to factors
+# In this example the variable 'ses.disadvantage.indicator' is the outcome variable
+data$ses.disadvantage.indicator <- as_factor(data$ses.disadvantage.indicator)
+```
+
+**A descriptive summary of the variables used to predict the disadvantaged status**
+```{r}
+# a descriptive table of the variables included in the logit model
+label(data$ses.disadvantage.indicator) <- "SES Disadvantaged"
+label(data$pell.grant.indicator) <- "Pell Grant"
+label(data$fap) <- "Fee Assistance Plan"
+label(data$group.family.income) <- "Gross Family Income"
+label(data$group.parent.edu) <- "Parent Highest Education"
+label(data$contribution.to.family) <- "Contribution to Family"
+label(data$family.assistance.program) <- "Family Receiving Financial Aid during Childhood"
+
+table1(~ ses.disadvantage.indicator + pell.grant.indicator + fap + group.family.income + 
+                 group.parent.edu + family.assistance.program + contribution.to.family | school, 
+               data = data, overall = "Total")
+```
+
+***
+
+**Visualize missing data**
+
+```{r}
+vis_miss(data) +
+  theme(axis.text.x = element_text(angle = 90)) 
+
+# Drop NAs for all variables
+data.logit.1 <- data %>%
+  drop_na()
+```
+
+## **Modelling with N variables**
+
+List of variables included in the model (E.g.,):
+- Pell grant
+- Gross family income
+- Parental education
+- FAP (Fee Assistance Program, AAMC)
+- Whether or not receiving family financial aid during childhood
+- Contribution to family
+
+***
+
+```{r}
+# Set up the logistic regression model with all variables to see which ones are significant either through herarchical or stepwise regression
+# In this example, a single model is run, you may choose to re-run the model with different variables based on the results of the first model
+m1 <- glm( ses.disadvantage.indicator ~ 
+             pell.grant.indicator + 
+             group.family.income + 
+             group.parent.edu + 
+             fap + 
+             family.assistance.program +
+             contribution.to.family, data = data.logit.1, family = "binomial")
+```
+
+```{r}
+tab_model(m1)
+```
+
+```{r}
+# Wald significance test of predictors
+print(Anova(m1, type = 3))
+```
+
+***
+
+X Variables failed to reach significance (_p_ > .05) as a predictor in the regression. 
+Therefore, we decided to drop them and modelling again with remaining variables.
+
+## **Modelling with 5 variables**
+
+- Pell grant
+- Gross family income
+- Parental education
+- FAP
+- Whether or not receiving family financial aid during childhood
+
+```{r}
+# remove variables that are not significant
+data.logit.2 <- data %>%
+  select(-c(contribution.to.family)) %>%
+  drop_na()
+
+# convert variables to factors
+data.logit.2$ses.disadvantage.indicator <- as_factor(data.logit.2$ses.disadvantage.indicator)
+
+# set next regression model with remaining variables
+m2 <- glm( ses.disadvantage.indicator ~ 
+             pell.grant.indicator + 
+             fap + 
+             group.family.income + 
+             group.parent.edu + 
+             family.assistance.program, data = data.logit.2, family = "binomial")
+
+tab_model(m2, df.method = "wald")
+print(Anova(m2, type = 3))
+```
+
+```{r, results='hide'}
+# a descriptive table of the variables included in the logit model
+label(data.logit.2$ses.disadvantage.indicator) <- "SES Disadvantaged"
+label(data.logit.2$pell.grant.indicator) <- "Pell Grant"
+label(data.logit.2$fap) <- "Fee Assistance Plan"
+label(data.logit.2$group.family.income) <- "Gross Family Income"
+label(data.logit.2$group.parent.edu) <- "Parent Highest Education"
+label(data.logit.2$family.assistance.program) <- "Family Receiving Financial Aid during Childhood"
+
+table1::table1(~ ses.disadvantage.indicator + pell.grant.indicator + fap + group.family.income + 
+                 group.parent.edu + family.assistance.program + school + age + gender + group.race + group.lang, 
+               data = data.logit.2, overall = "Total")
+```
+
+Based on the above model, the significant variables were whether or not applicants received:
+(To modify based on results of the final model)
+- a Pell grant, 
+- family receiving financial aid during childhood, 
+- gross family income, and 
+- parents' highest educational attainment 
+
+These will be used to predict the probability of SES disadvantage status, ranging continuously from 0 to 1.0 (with higher predicted probability indicating lower SES).
+
+
+**ROC curve for the final SES composite model**
+
+```{r}
+# ROC curve for the logistic model
+r <- pROC::roc(ses.disadvantage.indicator ~ probability.ses.disadvantage, data.logit.2, quiet = TRUE)
+g <- pROC::ggroc(r, legacy.axes=TRUE)
+g + ggtitle("ROC curve for the final model") + 
+  geom_segment(aes(x = 0, xend = 1, y = 0, yend = 1), color="grey", linetype="dashed") + 
+  coord_fixed() +
+  annotate("text", x = .75, y = .25, label = paste("AUC = ", round(r$auc, digits = 2))) +
+  theme_bw()
+```
+
+Based on the final model, the four variables together (Pell grant, family receiving financial aid during childhood, gross family income, and parents' highest education) are good at predicting students' SES disadvantage status (R^2^Tjur = 0.375). The predictive accuracy is about 86% (AUC = 0.87).
+
+
+**Extract model Regression Coefficients to use on new data**
+https://www.statology.org/extract-coefficients-from-glm-in-r/**
+You can then apply these values similar to the 'Multiplier' column in the 'UC DAVIS - SED Scale Template' tab of the accompaning example .xlsx file. 
+For example: 
+
+New Applcant 1:
+- Pell grant= 0
+- Family receiving financial aid during childhood= 1
+- Gross family income= 1
+- Parents' highest education= 0 
+
+SED_Score_Raw = Pell*(coeff_Pell) + family aid*(coeff_FamAid) + fam income*(coeff_FamIncome) + parent education*(coeff_ParEd) + Intercept
+
+SED_Score_Scaled = ((exp(SED_Score_Raw))/(1+(exp(SED_Score_Raw)))*100)
+
+
+```{r}
+# View regression coefficients
+m2$coefficients
+
+```
